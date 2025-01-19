@@ -356,6 +356,82 @@ class ZFSSnapshot(ZFSDataset):
     # note: force means create missing parent filesystems
     def clone(self, name, props={}, force=False):
         raise NotImplementedError()
+    
+    def send_to_file(self, filename, base=None, intermediates=False, replicate=False,
+             properties=False, deduplicate=False, verbose=True):
+        logger = logging.getLogger(__name__)
+
+        # get the size of the snapshot to send
+        stream_size = self.stream_size(base=base)
+        # use minimal mbuffer size of 1 and maximal size of 512 (256 over ssh)
+        mbuff_size = min(max(stream_size // 1024**2, 1), 512)
+
+        # choose shell (sh or ssh) and mbuffer, pv commands on local / remote
+        if self.ssh:
+            shell = self.ssh.cmd
+            mbuffer, pv = self.ssh.mbuffer, self.ssh.pv
+        else:
+            shell = SHELL
+            mbuffer, pv = MBUFFER, PV
+
+        # only compress if send is over ssh
+        compress = None
+
+        # construct zfs send command
+        cmd = ['zfs', 'send']
+
+        # cmd.append('-v')
+        # cmd.append('-P')
+        # "zfs send snapshot > gzip filename"
+        # cmd = zfs send
+        if replicate:
+            cmd.append('-R')
+        if properties:
+            cmd.append('-p')
+        if deduplicate:
+            cmd.append('-D')
+        if verbose:
+            cmd.append('-v')
+
+        if base is not None:
+            if intermediates:
+                cmd.append('-I')
+            else:
+                cmd.append('-i')
+            cmd.append(quote(base.name)) # use shlex to quote the name
+
+        # cmd = zfs send -I base.name self.name 
+
+        cmd.append(quote(self.name)) # use shlex to quote the name
+
+        # add additional commands
+        #if mbuffer and stream_size >= 1024**2: # don't use mbuffer if stream size is too small
+        #    logger.debug("Using mbuffer on source: '{:s}'...".format(' '.join(mbuffer(mbuff_size))))
+        #    cmd += ['|'] + mbuffer(mbuff_size)
+
+        #if pv and stream_size >= 1024**2: # don't use pv if stream size is too small
+        #    pv_cmd = pv(stream_size)
+        #    if not sys.stdout.isatty():
+        #        pv_cmd += ['-D', '60', '-i', '60'] # if stdout is redirected, only update pv every 60s
+        #    logger.debug("Using pv on source: '{:s}'...".format(' '.join(pv_cmd)))
+        #    cmd += ['|'] + pv_cmd
+
+        #if compress:
+        #    logger.debug("Using compression on source: '{:s}'...".format(' '.join(compress)))
+        #    cmd += ['|'] + compress
+
+        # Add '> filename.gzip'
+        zip_cmd = ['gzip', '>', filename]
+        cmd += ['|'] + zip_cmd
+        #cmd = zfs send -I base.name self.name | (mbuffer) | (pv) | (compress) | gzip > filename.gz
+
+        # execute command with shell (sh or ssh)
+        cmd = [' '.join(cmd)]
+
+        # TODO HEY don't actually run this until we see what the command is...
+        print(str(cmd))
+        return sp.run(cmd, shell=True, check=True, stdout=sp.PIPE) # return zfs send process
+
 
     def send(self, ssh_dest=None, base=None, intermediates=False, replicate=False,
              properties=False, deduplicate=False, raw=False, resume_token=None):
